@@ -10,10 +10,9 @@ With observe_arm=False, both networks omit arm positions and velocities:
 Actor frame/Critic dimensions become 44/56, with otherwise identical dynamics.
 All tasks use CTS with five actor history frames and a single-frame critic.
 
-The arm uses independent position targets, randomized on training resets and
-zero during playback. No IK solver or within-episode arm-motion curriculum is
-provided here. Train with representative external arm trajectories before
-expecting robustness to IK motion. The observation
+The arm uses independent smooth random position targets during training and
+zero targets during playback. No IK solver is provided; evaluate against
+representative external IK trajectories before deployment. The observation
 and dynamics changes require retraining old fixed-arm policies.
 """
 
@@ -34,6 +33,7 @@ from .robot import ARM_JOINTS, LEG_JOINTS, VARIANTS, get_robot_cfg
 from .gait import GaitVelocityCommandCfg, alternating_contacts, gait_phase
 from .cts import HISTORY_LENGTH, teacher_role
 from .domain_randomization import randomize_arm_dynamics, randomize_arm_pose
+from .arm_motion import RandomArmMotionCfg
 
 
 def tron2_flat_env_cfg(
@@ -93,6 +93,7 @@ def tron2_flat_env_cfg(
     cfg.events["reset_robot_joints"].params["asset_cfg"].joint_names = LEG_JOINTS
     cfg.events.pop("push_robot")
     if not play:
+        cfg.commands["arm_motion"] = RandomArmMotionCfg()
         cfg.events["arm_pose"] = EventTermCfg(
             func=randomize_arm_pose, mode="reset",
             params={
@@ -139,7 +140,7 @@ def tron2_flat_env_cfg(
     cfg.viewer.distance = 2.5
     cfg.sim.mujoco.timestep = 0.002
     cfg.decimation = 10
-    cfg.sim.mujoco.ccd_iterations = 50
+    cfg.sim.mujoco.ccd_iterations = 100
     cfg.sim.nconmax = 128
     cfg.sim.njmax = 512
     cfg.sim.contact_sensor_maxmatch = 128

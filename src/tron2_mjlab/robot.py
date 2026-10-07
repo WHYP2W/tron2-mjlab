@@ -56,13 +56,14 @@ def get_robot_cfg(variant: str) -> EntityCfg:
     """Use leg policy targets and independent arm position targets.
 
     The six arm joints have zero defaults and independent position actuators.
-    Training reset events replace the initial pose and targets with sampled poses.
+    Training reset events sample initial poses; arm_motion supplies smooth targets.
     An external IK controller can use robot.find_joints(ARM_JOINTS,
     preserve_order=True) and robot.set_joint_position_target(q_ik,
     joint_ids=arm_ids) before env.step(). Targets are in radians and must
     respect joint limits. They persist until replaced or the environment
-    resets (sampled in training, zero in playback); the leg policy does not
-    overwrite them.
+    resets (sampled in training, zero in playback). For external IK during
+    training, remove the arm_motion command first; it is absent during playback.
+    The leg policy does not overwrite arm targets.
     """
     actuators = [
         BuiltinPositionActuatorCfg(

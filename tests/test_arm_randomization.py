@@ -79,6 +79,7 @@ class ArmRandomizationTests(unittest.TestCase):
         try:
             env.reset()
             robot = env.scene["robot"]
+            motion = env.command_manager.get_term("arm_motion")
             asset = SceneEntityCfg(
                 "robot", body_names=tuple(f"arm{index}_Link" for index in range(1, 7)),
                 joint_names=ARM_JOINTS, actuator_names=ARM_JOINTS, preserve_order=True,
@@ -89,6 +90,7 @@ class ArmRandomizationTests(unittest.TestCase):
             ctrls = robot.indexing.ctrl_ids[asset.actuator_ids]
             arm_ids = asset.joint_ids
             arm_position = robot.data.joint_pos[:, arm_ids].clone()
+            torch.testing.assert_close(motion.command, arm_position)
             torch.testing.assert_close(robot.data.joint_pos_target[:, arm_ids], arm_position)
             self.assertGreater(arm_position.std(dim=0).max().item(), 0.1)
             torch.testing.assert_close(robot.data.joint_vel[:, arm_ids], torch.zeros_like(arm_position))
@@ -98,6 +100,9 @@ class ArmRandomizationTests(unittest.TestCase):
             )
             remaining = torch.tensor([1, 2, 4, 5, 6, 7], device=env.device)
             torch.testing.assert_close(robot.data.joint_pos[remaining][:, arm_ids], arm_position[remaining])
+            torch.testing.assert_close(
+                motion.command, robot.data.joint_pos_target[:, arm_ids],
+            )
             model = env.sim.model
             default_mass = env.sim.get_default_field("body_mass")
             default_inertia = env.sim.get_default_field("body_inertia")
@@ -159,9 +164,18 @@ class ArmRandomizationTests(unittest.TestCase):
             unchanged = torch.tensor([1, 2, 4, 5, 6, 7], device=env.device)
             torch.testing.assert_close(model.body_mass[unchanged], original_mass[unchanged])
             torch.testing.assert_close(model.actuator_gainprm[unchanged], original_gain[unchanged])
-            for _ in range(30):
+            moved_target = False
+            for _ in range(60):
+                previous_target = motion.command.clone()
                 obs, reward, _, _, _ = env.step(torch.zeros((8, 10), device=env.device))
                 self.assertTrue(torch.isfinite(reward).all())
                 self.assertTrue(all(torch.isfinite(value).all() for value in obs.values()))
+                continuing = env.episode_length_buf > 0
+                if continuing.any():
+                    difference = (motion.command[continuing] - previous_target[continuing]).abs()
+                    self.assertLessEqual(difference.max().item(), 0.02001)
+                    moved_target |= difference.max().item() > 1e-4
+                torch.testing.assert_close(robot.data.joint_pos_target[:, arm_ids], motion.command)
+            self.assertTrue(moved_target)
         finally:
             env.close()

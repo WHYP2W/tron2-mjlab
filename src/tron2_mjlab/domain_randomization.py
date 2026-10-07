@@ -13,6 +13,24 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 
+def sample_arm_pose(
+    limits: torch.Tensor,
+    default_position: torch.Tensor,
+    range_fraction: float = 0.8,
+    nominal_probability: float = 0.2,
+) -> torch.Tensor:
+    """Sample joint-space poses, retaining a fraction of nominal poses."""
+    if not isfinite(range_fraction) or not 0 < range_fraction <= 1:
+        raise ValueError("Arm pose range_fraction must be in (0, 1]")
+    if not isfinite(nominal_probability) or not 0 <= nominal_probability <= 1:
+        raise ValueError("Arm nominal_probability must be in [0, 1]")
+    midpoint = limits.mean(dim=-1)
+    half_range = (limits[..., 1] - limits[..., 0]) * (0.5 * range_fraction)
+    position = midpoint + (2 * torch.rand_like(midpoint) - 1) * half_range
+    nominal = torch.rand((limits.shape[0], 1), device=limits.device) < nominal_probability
+    return torch.where(nominal, default_position, position)
+
+
 def randomize_arm_pose(
     env: "ManagerBasedRlEnv",
     env_ids: torch.Tensor | None,
@@ -21,20 +39,15 @@ def randomize_arm_pose(
     nominal_probability: float = 0.2,
 ) -> None:
     """Sample episode arm poses and matching independent position targets."""
-    if not isfinite(range_fraction) or not 0 < range_fraction <= 1:
-        raise ValueError("Arm pose range_fraction must be in (0, 1]")
-    if not isfinite(nominal_probability) or not 0 <= nominal_probability <= 1:
-        raise ValueError("Arm nominal_probability must be in [0, 1]")
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
     robot = env.scene[asset_cfg.name]
     joint_ids = torch.as_tensor(asset_cfg.joint_ids, device=env.device)
-    limits = robot.data.soft_joint_pos_limits[env_ids][:, joint_ids]
-    midpoint = limits.mean(dim=-1)
-    half_range = (limits[..., 1] - limits[..., 0]) * (0.5 * range_fraction)
-    position = midpoint + (2 * torch.rand_like(midpoint) - 1) * half_range
-    nominal = torch.rand((len(env_ids), 1), device=env.device) < nominal_probability
-    position = torch.where(nominal, robot.data.default_joint_pos[env_ids][:, joint_ids], position)
+    position = sample_arm_pose(
+        robot.data.soft_joint_pos_limits[env_ids][:, joint_ids],
+        robot.data.default_joint_pos[env_ids][:, joint_ids],
+        range_fraction, nominal_probability,
+    )
     robot.write_joint_state_to_sim(
         position, torch.zeros_like(position), joint_ids=joint_ids, env_ids=env_ids,
     )

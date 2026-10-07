@@ -117,6 +117,7 @@ class Tron2Tests(unittest.TestCase):
                 self.assertEqual(baseline.observations["actor"].enable_corruption, not play)
                 self.assertFalse(baseline.observations["critic"].enable_corruption)
                 for cfg in (full, baseline):
+                    self.assertEqual(cfg.sim.mujoco.ccd_iterations, 100)
                     ranges = cfg.commands["twist"].ranges
                     self.assertEqual(ranges.lin_vel_x, (-1.0, 2.0))
                     self.assertEqual(ranges.lin_vel_y, (-0.6, 0.6))
@@ -336,6 +337,8 @@ class Tron2Tests(unittest.TestCase):
                 try:
                     env.reset()
                     actions = torch.zeros((4, 10), device=env.device)
+                    self.assertEqual(env.sim.mj_model.opt.ccd_iterations, 100)
+                    self.assertEqual(env.sim.wp_model.opt.ccd_iterations, 100)
                     clock = env.command_manager.get_term("twist").gait_clock
                     clock.phase[:] = torch.tensor([0.1, 0.2, 0.3, 0.4], device=env.device)
                     env.reset(env_ids=torch.tensor([1, 3], device=env.device))
