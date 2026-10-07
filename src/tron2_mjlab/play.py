@@ -9,13 +9,13 @@ import viser
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
-from mjlab.tasks.velocity.mdp import UniformVelocityCommand, UniformVelocityCommandCfg
 from mjlab.viewer import ViserPlayViewer
 
 from .robot import VARIANTS
+from .gait import GaitVelocityCommand, GaitVelocityCommandCfg
 
 
-class ManualVelocityCommand(UniformVelocityCommand):
+class ManualVelocityCommand(GaitVelocityCommand):
     def __init__(self, cfg, env):
         self.manual_target: tuple[float, float, float] | None = (0.0, 0.0, 0.0)
         super().__init__(cfg, env)
@@ -35,7 +35,7 @@ class ManualVelocityCommand(UniformVelocityCommand):
 
 
 @dataclass(kw_only=True)
-class ManualVelocityCommandCfg(UniformVelocityCommandCfg):
+class ManualVelocityCommandCfg(GaitVelocityCommandCfg):
     def build(self, env):
         return ManualVelocityCommand(self, env)
 

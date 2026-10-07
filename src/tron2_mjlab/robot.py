@@ -2,6 +2,7 @@
 
 import xml.etree.ElementTree as ET
 from functools import partial
+from math import pi
 from pathlib import Path
 
 import mujoco
@@ -79,7 +80,8 @@ def get_robot_cfg(variant: str) -> EntityCfg:
         ),
     ]
     joint_pos = {"proximal_pitch_.*": 0.3, "knee_.*": -0.6,
-                 "proximal_(roll|yaw)_.*": 0.0, "ankle_pitch_.*": 0.3}
+                 "proximal_roll_.*": 0.0, "ankle_pitch_.*": 0.3,
+                 "proximal_yaw_L_Joint": -pi, "proximal_yaw_R_Joint": pi}
     joint_pos.update({name: 0.0 for name in ARM_JOINTS})
     return EntityCfg(
         spec_fn=partial(get_spec, variant),

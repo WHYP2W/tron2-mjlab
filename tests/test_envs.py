@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from dataclasses import asdict
 from itertools import product
+from math import pi
 from unittest.mock import patch
 
 import mujoco
@@ -14,6 +15,7 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 
 from tron2_mjlab.env_cfgs import tron2_flat_env_cfg
+from tron2_mjlab.gait import GaitVelocityCommand, alternating_contacts, gait_phase
 from tron2_mjlab.play import ManualVelocityCommandCfg, VelocityViewer, main as play_main
 from tron2_mjlab.robot import ARM_JOINTS, ASSET_ROOT, LEG_JOINTS, VARIANTS, get_robot_cfg, get_spec
 
@@ -31,6 +33,13 @@ class Tron2Tests(unittest.TestCase):
             with self.subTest(variant=variant):
                 model = Entity(get_robot_cfg(variant)).spec.compile()
                 self.assertEqual((model.nq, model.nv, model.nu), (23, 22, 16))
+                for side, angle in (("L", -pi), ("R", pi)):
+                    joint = model.joint(f"proximal_yaw_{side}_Joint")
+                    self.assertAlmostEqual(model.key_qpos[0, joint.qposadr[0]], angle)
+                    low, high = joint.range
+                    margin = (high - low) * 0.05
+                    self.assertGreater(angle, low + margin)
+                    self.assertLess(angle, high - margin)
                 for name in ARM_JOINTS:
                     self.assertGreaterEqual(model.joint(name).id, 0)
                 for joint_id in range(model.njnt):
@@ -54,7 +63,22 @@ class Tron2Tests(unittest.TestCase):
                         cfg.rewards[reward].params["asset_cfg"].joint_names, LEG_JOINTS,
                     )
                 self.assertIn("foot_slip", cfg.rewards)
-                self.assertEqual(cfg.commands["twist"].ranges.lin_vel_y, (-0.3, 0.3))
+                ranges = cfg.commands["twist"].ranges
+                self.assertEqual(ranges.lin_vel_x, (-1.0, 2.0))
+                self.assertEqual(ranges.lin_vel_y, (-0.6, 0.6))
+                self.assertEqual(ranges.ang_vel_z, (-1.0, 1.0))
+                gait = cfg.rewards["gait_contact"]
+                self.assertIs(gait.func, alternating_contacts)
+                self.assertEqual(gait.weight, 1.0)
+                self.assertEqual(cfg.commands["twist"].gait.slow_period, 0.9)
+                self.assertEqual(cfg.commands["twist"].gait.fast_period, 0.6)
+                self.assertEqual(gait.params["stance_ratio"], 0.6)
+                for group in cfg.observations.values():
+                    phase = group.terms["gait_phase"]
+                    self.assertIs(phase.func, gait_phase)
+                    self.assertIsNone(phase.noise)
+                    for name, value in phase.params.items():
+                        self.assertEqual(gait.params[name], value)
         for variant in ("WFYG", "SFYG_TRON2B"):
             with self.subTest(unsupported_variant=variant):
                 with self.assertRaises(ValueError):
@@ -87,6 +111,11 @@ class Tron2Tests(unittest.TestCase):
                 self.assertEqual((model.nq, model.nv, model.nu), (23, 22, 16))
                 self.assertEqual(baseline.observations["actor"].enable_corruption, not play)
                 self.assertFalse(baseline.observations["critic"].enable_corruption)
+                for cfg in (full, baseline):
+                    ranges = cfg.commands["twist"].ranges
+                    self.assertEqual(ranges.lin_vel_x, (-1.0, 2.0))
+                    self.assertEqual(ranges.lin_vel_y, (-0.6, 0.6))
+                    self.assertEqual(ranges.ang_vel_z, (-1.0, 1.0))
         full_rl = load_rl_cfg(task + "-LBC")
         baseline_rl = load_rl_cfg(task + "-Baseline")
         self.assertEqual(full_rl.experiment_name, "tron2a_sfyg_velocity_lbc")
@@ -129,16 +158,50 @@ class Tron2Tests(unittest.TestCase):
                 env = ManagerBasedRlEnv(cfg, device="cuda:0")
                 try:
                     env.reset()
+                    robot = env.scene["robot"]
+                    yaw_ids, _ = robot.find_joints(
+                        ("proximal_yaw_L_Joint", "proximal_yaw_R_Joint"),
+                        preserve_order=True,
+                    )
+                    yaw = torch.tensor([[-pi, pi]], device=env.device)
+                    torch.testing.assert_close(robot.data.joint_pos[:, yaw_ids], yaw)
+                    torch.testing.assert_close(robot.data.default_joint_pos[:, yaw_ids], yaw)
+                    env.action_manager.process_action(torch.zeros((1, 10), device=env.device))
+                    env.action_manager.apply_action()
+                    torch.testing.assert_close(
+                        robot.data.joint_pos_target[:, yaw_ids],
+                        yaw - robot.data.encoder_bias[:, yaw_ids],
+                    )
+                    joint_count = 10 if baseline else 16
+                    obs = env.observation_manager.compute_group("actor")
+                    torch.testing.assert_close(
+                        obs[:, 9:9 + joint_count],
+                        torch.zeros((1, joint_count), device=env.device),
+                    )
                     command = env.command_manager.get_term("twist")
-                    target = (0.5, 0.2, -0.3)
+                    self.assertIsInstance(command, GaitVelocityCommand)
+                    clock = command.gait_clock
+                    torch.testing.assert_close(clock.phase, torch.zeros_like(clock.phase))
+                    target = (2.0, 0.6, -1.0)
                     command.manual_target = target
                     command.time_left[:] = 0.0
                     env.step(torch.zeros((1, 10), device=env.device))
+                    torch.testing.assert_close(clock.phase, env.step_dt * clock.frequency)
                     torch.testing.assert_close(command.command[0], torch.tensor(target, device=env.device))
+                    phase_cfg = cfg.observations["actor"].terms["gait_phase"]
+                    torch.testing.assert_close(
+                        env.observation_manager.compute_group("actor")[:, -5:-3],
+                        gait_phase(env, **phase_cfg.params),
+                    )
                     env.reset()
+                    torch.testing.assert_close(clock.phase, torch.zeros_like(clock.phase))
+                    torch.testing.assert_close(clock.frequency, torch.full_like(clock.frequency, 1 / 0.9))
+                    torch.testing.assert_close(robot.data.joint_pos[:, yaw_ids], yaw)
                     torch.testing.assert_close(command.command[0], torch.tensor(target, device=env.device))
                     command.manual_target = (0.0, 0.0, 0.0)
+                    previous_phase = clock.phase.clone()
                     command._update_command()
+                    torch.testing.assert_close(clock.phase, previous_phase)
                     self.assertFalse(command.command.any())
                     command.manual_target = None
                     command._resample_command(torch.arange(env.num_envs, device=env.device))
@@ -147,9 +210,12 @@ class Tron2Tests(unittest.TestCase):
                     viewer = VelocityViewer(wrapped, lambda obs: torch.zeros((1, 10), device=env.device))
                     viewer.setup()
                     try:
-                        viewer.sliders[0].value = 0.5
-                        viewer.sliders[1].value = 0.2
-                        viewer.sliders[2].value = -0.3
+                        for slider, limits in zip(
+                            viewer.sliders, ((-1.0, 2.0), (-0.6, 0.6), (-1.0, 1.0)),
+                        ):
+                            self.assertEqual((slider.min, slider.max), limits)
+                        for slider, value in zip(viewer.sliders, target):
+                            slider.value = value
                         viewer.sync_viewer_to_env()
                         torch.testing.assert_close(wrapped.get_observations()["actor"][0, -3:],
                                                    torch.tensor(target, device=env.device))
@@ -160,6 +226,10 @@ class Tron2Tests(unittest.TestCase):
                         viewer._stop(None)
                         viewer.sync_viewer_to_env()
                         self.assertFalse(command.command.any())
+                        torch.testing.assert_close(
+                            wrapped.get_observations()["actor"][:, -5:-3],
+                            torch.zeros((1, 2), device=env.device),
+                        )
                     finally:
                         viewer.close()
                 finally:
@@ -190,7 +260,7 @@ class Tron2Tests(unittest.TestCase):
             )
             robot.write_joint_state_to_sim(position, velocity, joint_ids=arm_ids)
             env.sim.forward()
-            for group, width in (("actor", 54), ("critic", 66)):
+            for group, width in (("actor", 56), ("critic", 68)):
                 obs = env.observation_manager.compute_group(group)
                 self.assertEqual(obs.shape, (2, width))
                 torch.testing.assert_close(obs[:, 19:25], position)
@@ -234,7 +304,7 @@ class Tron2Tests(unittest.TestCase):
             velocity = torch.full_like(position, 0.5)
             robot.write_joint_state_to_sim(position, velocity, joint_ids=arm_ids)
             env.sim.forward()
-            for group, width in (("actor", 42), ("critic", 54)):
+            for group, width in (("actor", 44), ("critic", 56)):
                 obs = env.observation_manager.compute_group(group)
                 self.assertEqual(obs.shape, (1, width))
                 torch.testing.assert_close(obs, observations[group])
@@ -257,11 +327,17 @@ class Tron2Tests(unittest.TestCase):
                 try:
                     env.reset()
                     actions = torch.zeros((4, 10), device=env.device)
+                    clock = env.command_manager.get_term("twist").gait_clock
+                    clock.phase[:] = torch.tensor([0.1, 0.2, 0.3, 0.4], device=env.device)
+                    env.reset(env_ids=torch.tensor([1, 3], device=env.device))
+                    torch.testing.assert_close(
+                        clock.phase, torch.tensor([0.1, 0.0, 0.3, 0.0], device=env.device),
+                    )
                     touched_ground = False
                     for step in range(100):
                         obs, reward, _, _, _ = env.step(actions)
-                        self.assertEqual(obs["actor"].shape, (4, 42 if baseline else 54))
-                        self.assertEqual(obs["critic"].shape, (4, 54 if baseline else 66))
+                        self.assertEqual(obs["actor"].shape, (4, 44 if baseline else 56))
+                        self.assertEqual(obs["critic"].shape, (4, 56 if baseline else 68))
                         self.assertTrue(torch.isfinite(reward).all())
                         self.assertTrue(all(torch.isfinite(value).all() for value in obs.values()))
                         touched_ground |= bool(env.scene["feet_ground_contact"].data.found.any())
