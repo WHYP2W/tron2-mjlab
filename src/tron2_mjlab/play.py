@@ -8,11 +8,10 @@ import torch
 import viser
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
-from mjlab.tasks.registry import load_rl_cfg, load_runner_cls
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.velocity.mdp import UniformVelocityCommand, UniformVelocityCommandCfg
 from mjlab.viewer import ViserPlayViewer
 
-from .env_cfgs import tron2_flat_env_cfg
 from .robot import VARIANTS
 
 
@@ -83,17 +82,19 @@ class VelocityViewer(ViserPlayViewer):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TRON2A Viser manual velocity playback")
+    parser = argparse.ArgumentParser(description="TRON2A Viser manual velocity playback (default: LBC)")
     parser.add_argument("variant", choices=VARIANTS)
+    parser.add_argument("--baseline", action="store_true",
+                        help="Use Baseline instead of LBC, without arm-state observations")
     parser.add_argument("--checkpoint-file", type=Path)
     parser.add_argument("--agent", choices=("trained", "zero"), default="trained")
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
     if args.agent == "trained" and (args.checkpoint_file is None or not args.checkpoint_file.is_file()):
         parser.error("--checkpoint-file must point to a .pt file; use --agent zero for model inspection")
-    cfg = tron2_flat_env_cfg(args.variant, play=True)
+    task = f"Mjlab-Velocity-Flat-TRON2A-{args.variant}" + ("-Baseline" if args.baseline else "-LBC")
+    cfg = load_env_cfg(task, play=True)
     cfg.commands["twist"] = ManualVelocityCommandCfg(**vars(cfg.commands["twist"]))
-    task = f"Mjlab-Velocity-Flat-TRON2A-{args.variant}"
     runner_cfg = load_rl_cfg(task)
     env = ManagerBasedRlEnv(cfg, device=args.device)
     try:

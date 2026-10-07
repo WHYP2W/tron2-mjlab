@@ -1,4 +1,19 @@
-"""Flat velocity tracking for TRON2A SFYG."""
+"""Flat velocity tracking for TRON2A SFYG with an independently controlled arm.
+
+Actor observations (54): base linear/angular velocity (3+3), gravity (3),
+joint positions relative to defaults (10 legs + 6 arm), joint velocities
+(10 legs + 6 arm), previous leg actions (10), and velocity command (3).
+Arm values follow arm1_Joint through arm6_Joint. Critic observations add
+12 foot-state values (66 total). Training adds joint observation noise;
+playback does not. The policy controls only the 10 leg position targets.
+With observe_arm=False, both networks omit arm positions and velocities:
+Actor/Critic dimensions become 42/54, with otherwise identical dynamics.
+
+The arm uses independent position targets, initially zero; no IK solver or
+arm-motion curriculum is provided here. Train with representative external
+arm trajectories before expecting robustness to IK motion. The observation
+and dynamics changes require retraining old fixed-arm policies.
+"""
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -8,10 +23,12 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
-from .robot import LEG_JOINTS, VARIANTS, get_robot_cfg
+from .robot import ARM_JOINTS, LEG_JOINTS, VARIANTS, get_robot_cfg
 
 
-def tron2_flat_env_cfg(variant: str, play: bool = False) -> ManagerBasedRlEnvCfg:
+def tron2_flat_env_cfg(
+    variant: str, play: bool = False, *, observe_arm: bool = True,
+) -> ManagerBasedRlEnvCfg:
     if variant not in VARIANTS:
         raise ValueError(f"Unknown TRON2A variant: {variant}")
     cfg = make_velocity_env_cfg()
@@ -48,15 +65,21 @@ def tron2_flat_env_cfg(variant: str, play: bool = False) -> ManagerBasedRlEnvCfg
     )}
     for group in cfg.observations.values():
         group.terms.pop("height_scan", None)
-        group.terms["joint_pos"].params["asset_cfg"] = SceneEntityCfg(
-            "robot", joint_names=LEG_JOINTS,
-        )
+        for term in ("joint_pos", "joint_vel"):
+            group.terms[term].params["asset_cfg"] = SceneEntityCfg(
+                "robot", joint_names=LEG_JOINTS + ARM_JOINTS if observe_arm else LEG_JOINTS,
+                preserve_order=True,
+            )
     cfg.observations["critic"].terms["foot_height"].params["asset_cfg"].site_names = sites
     cfg.events["foot_friction"].params["asset_cfg"].geom_names = foot_geoms
     cfg.events["base_com"].params["asset_cfg"].body_names = ("base_Link",)
+    cfg.events["reset_robot_joints"].params["asset_cfg"].joint_names = LEG_JOINTS
     cfg.events.pop("push_robot")
     cfg.rewards.pop("angular_momentum")
     cfg.rewards["pose"].params["asset_cfg"].joint_names = LEG_JOINTS
+    cfg.rewards["dof_pos_limits"].params["asset_cfg"] = SceneEntityCfg(
+        "robot", joint_names=LEG_JOINTS,
+    )
     for regime, std in (("standing", 0.1), ("walking", 0.3), ("running", 0.5)):
         cfg.rewards["pose"].params[f"std_{regime}"] = {".*": std}
     for name in ("upright", "body_ang_vel"):

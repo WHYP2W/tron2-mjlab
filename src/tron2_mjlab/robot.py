@@ -12,6 +12,7 @@ from mjlab.utils.spec_config import CollisionCfg
 VARIANTS = ("SFYG",)
 ASSET_ROOT = Path(__file__).parent / "tron2-robot-description" / "tron2a"
 LEG_JOINTS = (r"(?:proximal_.*|knee|ankle_pitch)_[LR]_Joint",)
+ARM_JOINTS = tuple(f"arm{index}_Joint" for index in range(1, 7))
 
 
 def get_spec(variant: str) -> mujoco.MjSpec:
@@ -36,7 +37,7 @@ def get_spec(variant: str) -> mujoco.MjSpec:
             geom.set("name", f"{body.get('name')}_{kind}_{index}")
         for joint in body.findall("joint"):
             name = joint.get("name", "")
-            if name.startswith(("arm", "gripper")):
+            if name.startswith("gripper"):
                 body.remove(joint)
         if body.get("name", "").startswith("ankle_pitch_"):
             side = body.get("name").split("_")[-2]
@@ -51,6 +52,15 @@ def get_spec(variant: str) -> mujoco.MjSpec:
 
 
 def get_robot_cfg(variant: str) -> EntityCfg:
+    """Use leg policy targets and independent arm position targets.
+
+    The six arm joints start at zero and are held by position actuators.
+    An external IK controller can use robot.find_joints(ARM_JOINTS,
+    preserve_order=True) and robot.set_joint_position_target(q_ik,
+    joint_ids=arm_ids) before env.step(). Targets are in radians and must
+    respect joint limits. They persist until replaced or the environment
+    resets to zero; the leg policy does not overwrite them.
+    """
     actuators = [
         BuiltinPositionActuatorCfg(
             target_names_expr=(r"(?:proximal_(?:pitch|roll)|knee)_[LR]_Joint",),
@@ -62,9 +72,15 @@ def get_robot_cfg(variant: str) -> EntityCfg:
             stiffness=80.0, damping=4.0, effort_limit=60.0,
             armature=0.0169834,
         ),
+        BuiltinPositionActuatorCfg(
+            target_names_expr=ARM_JOINTS,
+            stiffness=60.0, damping=3.0, effort_limit=30.0,
+            armature=0.0110718,
+        ),
     ]
     joint_pos = {"proximal_pitch_.*": 0.3, "knee_.*": -0.6,
                  "proximal_(roll|yaw)_.*": 0.0, "ankle_pitch_.*": 0.3}
+    joint_pos.update({name: 0.0 for name in ARM_JOINTS})
     return EntityCfg(
         spec_fn=partial(get_spec, variant),
         init_state=EntityCfg.InitialStateCfg(

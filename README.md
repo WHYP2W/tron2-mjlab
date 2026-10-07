@@ -2,13 +2,67 @@
 
 基于 mjlab 的基础速度跟踪环境，仅包含 TRON2A 的 SFYG 形态。
 
-| 任务 | 动作 |
-| --- | --- |
-| `Mjlab-Velocity-Flat-TRON2A-SFYG` | 10 个腿关节位置目标 |
+| 任务 | Actor / Critic 观测维度 | 动作 |
+| --- | --- | --- |
+| `Mjlab-Velocity-Flat-TRON2A-SFYG-LBC` | 54 / 66，含机械臂状态 | 10 个腿关节位置目标 |
+| `Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline` | 42 / 54，不含机械臂状态 | 10 个腿关节位置目标 |
 
 实现见 [模型适配](src/tron2_mjlab/robot.py) 和 [环境配置](src/tron2_mjlab/env_cfgs.py)。
-机械臂、夹爪按原 XML 零位固定，保留外观、质量和碰撞几何，不参与策略动作。
+机械臂保留 6 个关节自由度，由独立位置执行器控制，不参与策略动作；LBC 观测机械臂状态，Baseline 不观测。
+未接入外部控制时，机械臂以原 XML 零位为位置目标，通过 PD 保持，并非刚性固定。
+夹爪仍固定在零位；机械臂与夹爪的外观、质量和碰撞几何保留。
 仅使用平面地形，无高度扫描或地形课程。
+
+## 策略观测与机械臂控制
+
+LBC 的 Actor 输入共 54 维，按下表顺序拼接，无历史帧堆叠：
+
+| 观测 | 维度 | 含义 |
+| --- | --- | --- |
+| `base_lin_vel` | 3 | 基座 IMU 局部坐标系线速度 |
+| `base_ang_vel` | 3 | 基座 IMU 局部坐标系角速度 |
+| `projected_gravity` | 3 | 机身坐标系中的重力方向 |
+| `joint_pos` | 16 | 10 个腿关节、6 个臂关节相对默认姿态的角度 |
+| `joint_vel` | 16 | 同顺序的关节速度，默认速度为零 |
+| `actions` | 10 | 上一步双腿策略动作 |
+| `command` | 3 | 目标前向、横向、偏航速度 |
+
+臂关节按 `arm1_Joint` 至 `arm6_Joint` 排列，默认角度为零，因此对应观测即实际关节角度。
+训练时对前五项添加观测噪声，回放时关闭。Critic 使用无噪声版本，再加双脚高度、
+腾空时间、接触状态和接触力共 12 维，总计 66 维。
+姿态与关节软限位奖励仅约束双腿，不要求外部控制的机械臂回到默认姿态。
+
+未来 IK 控制器可在 `env.step(leg_actions)` 前下发机械臂关节位置目标：
+
+```python
+from tron2_mjlab.robot import ARM_JOINTS
+
+robot = env.scene["robot"]
+arm_ids, _ = robot.find_joints(ARM_JOINTS, preserve_order=True)
+# q_ik: shape (env.num_envs, 6), radians, on env.device, within joint limits.
+robot.set_joint_position_target(q_ik, joint_ids=arm_ids)
+obs, reward, terminated, truncated, info = env.step(leg_actions)
+```
+
+目标会保持到下次更新，不被双腿策略动作覆盖；环境重置时机械臂状态与目标回到零。
+当前未实现 IK 求解器或机械臂运动课程，PD 参数只是仿真起点。
+训练时还需加入代表性的机械臂运动，才能评估策略对未来 IK 动作的适应性。
+观测已由原来的 42/54 维（Actor/Critic）变为 54/66 维，且机械臂动力学发生变化，
+旧固定臂 checkpoint 不能直接使用，需要重新训练。
+
+### 不观测机械臂的 baseline
+
+Baseline 的 Actor 和 Critic 均只读取 10 个腿关节的位置、速度，不包含机械臂关节状态，
+也不接收 IK 目标或末端状态。Actor 维度为 `3+3+3+10+10+10+3=42`，
+Critic 再加 12 维足部状态，共 54 维。任务仍是本体速度跟踪，没有机械臂任务奖励。
+
+两组使用相同的机器人模型、可动机械臂、独立位置控制、奖励、噪声、重置和 PPO 超参数，
+区别仅在于是否直接观测机械臂状态。Baseline 仍会通过机身运动感受到机械臂运动带来的扰动，
+不是删除机械臂质量或锁死机械臂。外部 IK 接口对两组都可用。
+公平对比时应使用相同的机械臂运动、速度指令和随机种子。
+
+两组 checkpoint 的输入维度不同，不能混用；baseline 虽与旧固定臂模型观测维度相同，
+但机械臂动力学不同，也应重新训练。
 
 ## 安装
 
@@ -29,17 +83,21 @@ uv sync --default-index https://pypi.tuna.tsinghua.edu.cn/simple
 ## 训练
 
 ```bash
-uv run train Mjlab-Velocity-Flat-TRON2A-SFYG
+uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-LBC
+uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline
 ```
 
 默认 1024 个并行环境，物理步长 2 ms，策略频率 50 Hz，10000 次 PPO 迭代。
 使用 TensorBoard 本地日志，无需 W&B 登录。日志和模型位于 `logs/rsl_rl/`。
+LBC 实验目录为 `tron2a_sfyg_velocity_lbc`，Baseline 为 `tron2a_sfyg_velocity_baseline`。
+原无后缀任务名已改为 `-LBC`；此次仅重命名，不改变观测与控制，已有 54 维 Actor 的模型仍可用于 LBC。
+历史日志目录不自动迁移。
 显存不足时使用 `--env.scene.num-envs 256`。
 
 快速检查训练入口：
 
 ```bash
-uv run train Mjlab-Velocity-Flat-TRON2A-SFYG --env.scene.num-envs 16 --agent.max-iterations 1
+uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-LBC --env.scene.num-envs 16 --agent.max-iterations 1
 ```
 
 ## 预览
@@ -47,7 +105,8 @@ uv run train Mjlab-Velocity-Flat-TRON2A-SFYG --env.scene.num-envs 16 --agent.max
 ### 手动调速面板
 
 ```bash
-uv run tron2-play SFYG --checkpoint-file /path/to/sfyg/model.pt
+uv run tron2-play SFYG --checkpoint-file /path/to/lbc/model.pt
+uv run tron2-play SFYG --baseline --checkpoint-file /path/to/baseline/model.pt
 ```
 
 打开终端输出的 Viser 地址，在 `Velocity Command` 面板中调节 `Forward (m/s)`、
@@ -57,13 +116,15 @@ uv run tron2-play SFYG --checkpoint-file /path/to/sfyg/model.pt
 原 `Simulation / Speed` 调整的是仿真播放速度，与机器人目标速度不同。
 
 没有模型时可用 `uv run tron2-play SFYG --agent zero` 检查面板，但零动作策略不会跟踪速度。
+手动回放默认使用 LBC；检查 Baseline 时加 `--baseline`，加载 Baseline checkpoint 也必须加此选项。
 必须指定 SFYG 模型完整的 `.pt` 文件路径，不能只指定目录。
 
 ### 自动指令回放
 
 ```bash
-uv run play Mjlab-Velocity-Flat-TRON2A-SFYG --agent zero --viewer viser
-uv run play Mjlab-Velocity-Flat-TRON2A-SFYG --checkpoint-file /path/to/model.pt --viewer viser
+uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-LBC --agent zero --viewer viser
+uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-LBC --checkpoint-file /path/to/lbc/model.pt --viewer viser
+uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline --checkpoint-file /path/to/baseline/model.pt --viewer viser
 ```
 
 零动作仅用于检查模型，不代表已经学会平衡。PD 增益、初始姿态和奖励是训练起点，
@@ -75,7 +136,8 @@ uv run play Mjlab-Velocity-Flat-TRON2A-SFYG --checkpoint-file /path/to/model.pt 
 uv run python -m unittest discover -s tests -v
 ```
 
-覆盖 SFYG 任务注册、模型编译、平地配置、手动调速与重置、GPU 上 100 步接触检测及一次 PPO 更新；
+覆盖两组 SFYG 任务注册、模型编译、平地配置、机械臂状态观测与独立目标、baseline 观测隔离、
+手动调速与重置，以及两组任务各自的 GPU 上 100 步接触检测和一次 PPO 更新；
 没有 CUDA 时跳过 GPU 测试。
 
 ## 资源
