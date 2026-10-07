@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "seeds": [0, 1, 2],
+  "defaults": {
+    "variant": "WFYG",
+    "num_envs": 256,
+    "command_axes": "full",
+    "command_profile": "curriculum",
+    "zero_ratio": 0.3,
+    "history_seconds": 0.4,
+    "sensor_noise": 1.0,
+    "sensor_delay_steps": 2,
+    "action_delay_steps": 1,
+    "payload_mass": [0.0, 0.8],
+    "payload_com": 0.015,
+    "friction": [0.5, 1.1],
+    "motor_strength": [0.85, 1.15]
+  },
+  "training": {
+    "iterations": 10000,
+    "steps_per_env": 24,
+    "learning_epochs": 5,
+    "mini_batches": 4,
+    "teacher_fraction": 0.7
+  },
+  "presets": {
+    "wbc_plain": {
+      "baseline": "B1", "control_profile": "wbc", "command_frame": "world",
+      "command_axes": "full", "command_profile": "constant",
+      "command_limits": [0.5, 0.2, 0.5, 0.5, 0.5, 0.5],
+      "history_seconds": 0.1, "episode_seconds": 200.0,
+      "sensor_delay_steps": 0, "action_delay_steps": 0, "actuator_delay_steps": 4,
+      "payload_mass": [0.0, 0.0], "payload_com": 0.0,
+      "friction": [0.4, 1.2], "motor_strength": [0.8, 1.2],
+      "base_mass_offset": [-1.0, 3.0], "base_com_range": [0.03, 0.02, 0.03],
+      "leg_mass_scale": [0.8, 1.2]
+    },
+    "wbc_cts": {
+      "baseline": "B4", "control_profile": "wbc", "command_frame": "world",
+      "command_axes": "full", "command_profile": "constant",
+      "command_limits": [0.5, 0.2, 0.5, 0.5, 0.5, 0.5],
+      "history_seconds": 0.1, "episode_seconds": 200.0,
+      "sensor_delay_steps": 0, "action_delay_steps": 0, "actuator_delay_steps": 4,
+      "payload_mass": [0.0, 0.0], "payload_com": 0.0,
+      "friction": [0.4, 1.2], "motor_strength": [0.8, 1.2],
+      "base_mass_offset": [-1.0, 3.0], "base_com_range": [0.03, 0.02, 0.03],
+      "leg_mass_scale": [0.8, 1.2]
+    },
+    "wbc_height": {
+      "baseline": "B1", "control_profile": "wbc", "command_frame": "heading", "height_tracking": true,
+      "command_axes": "full", "command_profile": "constant",
+      "command_limits": [0.5, 0.2, 0.5, 0.5, 0.5, 0.5],
+      "history_seconds": 0.1, "episode_seconds": 200.0,
+      "sensor_delay_steps": 0, "action_delay_steps": 0, "actuator_delay_steps": 4,
+      "payload_mass": [0.0, 0.0], "payload_com": 0.0,
+      "friction": [0.4, 1.2], "motor_strength": [0.8, 1.2],
+      "base_mass_offset": [-1.0, 3.0], "base_com_range": [0.03, 0.02, 0.03],
+      "leg_mass_scale": [0.8, 1.2]
+    },
+    "plain_v0": {
+      "baseline": "B1",
+      "command_axes": "linear_yaw",
+      "sensor_noise": 0.0,
+      "sensor_delay_steps": 0,
+      "action_delay_steps": 0,
+      "payload_mass": [0.0, 0.0],
+      "payload_com": 0.0,
+      "friction": [0.8, 0.8],
+      "motor_strength": [1.0, 1.0]
+    },
+    "B0": {"baseline": "B0"},
+    "B1": {"baseline": "B1"},
+    "B2": {"baseline": "B2"},
+    "B3": {"baseline": "B3"},
+    "B4": {"baseline": "B4"},
+    "B5": {"baseline": "B5"},
+    "B6": {"baseline": "B6"},
+    "B7": {"baseline": "B7"},
+    "K0_no_prior": {"baseline": "B1"},
+    "K1_current_ik": {"baseline": "B1", "ik": "residual"},
+    "K2_joint_rollout": {"baseline": "B1", "ik": "residual", "preview": "joint"},
+    "K3_joint_ee_rollout": {"baseline": "B1", "ik": "residual", "preview": "joint_ee"},
+    "K4_com_jacobian": {"baseline": "B1", "ik": "residual", "preview": "full"},
+    "K5_preview_cts": {"baseline": "B7", "preview": "full"}
+  },
+  "ablations": {
+    "servo_inputs": {"preset": "B1", "field": "servo_inputs", "values": ["error", "cmd_meas", "full"]},
+    "history": {"preset": "B2", "field": "history_seconds", "values": [0.0, 0.1, 0.2, 0.4, 0.6]},
+    "privileged": {"preset": "B4", "field": "privileged_ablation", "values": ["none", "payload", "contact", "com"]},
+    "adaptation": {"preset": "B4", "field": "encoder", "values": ["history", "two_stage", "cts"]},
+    "commands": {"preset": "B1", "field": "command_profile", "values": ["constant", "curriculum"]},
+    "zero_ratio": {"preset": "B1", "field": "zero_ratio", "values": [0.0, 0.1, 0.3, 0.5]},
+    "yaw": {"preset": "B4", "field": "lock_arm_yaw", "values": [false, true]},
+    "smoothness": {"preset": "B1", "field": "action_rate_weight", "values": [0.01, 0.05, 0.2]},
+    "ik_integration": {"preset": "B1", "field": "ik", "values": ["none", "observation", "residual"]},
+    "residual_bound": {"preset": "B7", "field": "residual_bound", "values": [0.25, 0.5, 2.0]}
+  },
+  "ood": {
+    "nominal": {"payload_mass": [0.0, 0.0], "payload_com": 0.0, "friction": [0.8, 0.8], "motor_strength": [1.0, 1.0], "sensor_noise": 0.0, "sensor_delay_steps": 0, "action_delay_steps": 0, "actuator_delay_steps": 0, "base_mass_offset": [0.0, 0.0], "base_com_range": [0.0, 0.0, 0.0], "leg_mass_scale": [1.0, 1.0]},
+    "payload": {"payload_mass": [1.2, 1.2], "payload_com": 0.03},
+    "friction": {"friction": [0.3, 0.3]},
+    "sensors": {"sensor_noise": 2.0},
+    "latency": {"sensor_delay_steps": 4, "action_delay_steps": 3},
+    "timestamp_skew": {"timestamp_skew_steps": 2},
+    "odometry_drift": {"odometry_drift": 0.015},
+    "command_latency": {"command_delay_steps": 3},
+    "actuators": {"motor_strength": [0.65, 0.75]},
+    "push": {"push_velocity": 0.2}
+  }
+}
