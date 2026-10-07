@@ -55,12 +55,14 @@ def get_spec(variant: str) -> mujoco.MjSpec:
 def get_robot_cfg(variant: str) -> EntityCfg:
     """Use leg policy targets and independent arm position targets.
 
-    The six arm joints start at zero and are held by position actuators.
+    The six arm joints have zero defaults and independent position actuators.
+    Training reset events replace the initial pose and targets with sampled poses.
     An external IK controller can use robot.find_joints(ARM_JOINTS,
     preserve_order=True) and robot.set_joint_position_target(q_ik,
     joint_ids=arm_ids) before env.step(). Targets are in radians and must
     respect joint limits. They persist until replaced or the environment
-    resets to zero; the leg policy does not overwrite them.
+    resets (sampled in training, zero in playback); the leg policy does not
+    overwrite them.
     """
     actuators = [
         BuiltinPositionActuatorCfg(
@@ -94,6 +96,17 @@ def get_robot_cfg(variant: str) -> EntityCfg:
         ),
         collisions=(CollisionCfg(
             geom_names_expr=(".*_collision_.*",),
-            contype=0, conaffinity=1, condim=3, friction=(0.8, 0.005, 0.0001),
+            # Bit 1 is terrain; bits 2/4 allow only opposite-foot self contacts.
+            contype={
+                "ankle_pitch_L_Link_collision_.*": 2,
+                "ankle_pitch_R_Link_collision_.*": 4,
+                "(?!ankle_pitch_[LR]_Link_collision_).*": 0,
+            },
+            conaffinity={
+                "ankle_pitch_L_Link_collision_.*": 1 | 4,
+                "ankle_pitch_R_Link_collision_.*": 1 | 2,
+                "(?!ankle_pitch_[LR]_Link_collision_).*": 1,
+            },
+            condim=3, friction=(0.8, 0.005, 0.0001),
         ),),
     )

@@ -4,14 +4,21 @@
 
 | 任务 | Actor / Critic 观测维度 | 动作 |
 | --- | --- | --- |
-| `Mjlab-Velocity-Flat-TRON2A-SFYG-LBC` | 56 / 68，含机械臂状态及步态相位 | 10 个腿关节位置目标 |
-| `Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline` | 44 / 56，不含机械臂状态，含步态相位 | 10 个腿关节位置目标 |
+| `Mjlab-Velocity-Flat-TRON2A-SFYG-LBC-CTS` | Actor 历史 5×56 / Critic 68 | 10 个腿关节位置目标 |
+| `Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline-CTS` | Actor 历史 5×44 / Critic 56 | 10 个腿关节位置目标 |
 
 实现见 [模型适配](src/tron2_mjlab/robot.py) 和 [环境配置](src/tron2_mjlab/env_cfgs.py)。
 机械臂保留 6 个关节自由度，由独立位置执行器控制，不参与策略动作；LBC 观测机械臂状态，Baseline 不观测。
-未接入外部控制时，机械臂以原 XML 零位为位置目标，通过 PD 保持，并非刚性固定。
+训练时每次重置会采样机械臂姿态，并同步设置关节状态与 PD 目标；回放默认以原 XML 零位为目标。
+未接入外部控制时，PD 保持该 episode 的目标姿态，并非刚性固定。
 夹爪仍固定在零位；机械臂与夹爪的外观、质量和碰撞几何保留。
 仅使用平面地形，无高度扫描或地形课程。
+
+两组任务均启用**左脚与右脚之间**的自碰撞，范围仅限两个 `ankle_pitch` 脚部的碰撞几何。
+双脚及其他身体部位与地面的碰撞保持不变，腿与腿、脚与小腿、机械臂与躯干等其他自碰撞仍关闭。
+足部接触奖励和非法接触终止仍只检测地面，不会把踩到另一只脚算成地面支撑。
+这是物理碰撞响应，不是额外的避让奖励，仍需训练策略学会避开踩脚。
+此改动不会修改已运行训练进程中的模型；需重启训练或回放才生效，旧模型应在新碰撞条件下重新评估。
 
 两组任务均以膝盖前倾姿态初始化：左髋 yaw 为 `-pi`（−180°），右髋 yaw 为 `+pi`（+180°），
 符号遵循原模型左右镜像的关节限位。髋 pitch、膝、踝 pitch 分别保持 `0.3`、`-0.6`、`0.3` rad，
@@ -21,7 +28,7 @@
 
 ## 策略观测与机械臂控制
 
-LBC 的 Actor 输入共 56 维，按下表顺序拼接，无历史帧堆叠：
+LBC 的单帧 Actor 输入共 56 维，按下表顺序拼接；两组任务均使用 CTS，堆叠 5 帧历史：
 
 | 观测 | 维度 | 含义 |
 | --- | --- | --- |
@@ -51,8 +58,8 @@ robot.set_joint_position_target(q_ik, joint_ids=arm_ids)
 obs, reward, terminated, truncated, info = env.step(leg_actions)
 ```
 
-目标会保持到下次更新，不被双腿策略动作覆盖；环境重置时机械臂状态与目标回到零。
-当前未实现 IK 求解器或机械臂运动课程，PD 参数只是仿真起点。
+目标会保持到下次更新，不被双腿策略动作覆盖；训练重置时重新采样姿态，回放重置时回到零。
+当前未实现 IK 求解器或 episode 内的机械臂运动课程，PD 参数只是仿真起点。
 训练时还需加入代表性的机械臂运动，才能评估策略对未来 IK 动作的适应性。
 机械臂动力学和观测接口已改变，旧固定臂 checkpoint 不能直接使用，需要重新训练。
 新增步态相位后，原无相位的 LBC（54/66 维）和 Baseline（42/54 维）checkpoint
@@ -70,6 +77,64 @@ Critic 再加 12 维足部状态，共 56 维。任务仍是本体速度跟踪�
 公平对比时应使用相同的机械臂运动、速度指令和随机种子。
 
 两组 checkpoint 的输入维度不同，不能混用。
+
+## 机械臂姿态分布与动力学随机化
+
+训练时，LBC-CTS 和 Baseline-CTS 使用相同分布：
+
+- **每次 episode 重置**，以 80% 概率为 6 个机械臂关节独立采样角度，
+  范围为各关节软限位区间居中的 80%；以 20% 概率保留原 XML 零位姿态。
+  这里按软限位区间中心采样，不是对零位加对称扰动，因此也覆盖具有单侧限位的关节。
+- 将机械臂实际关节位置与 PD 目标设成同一组采样值，初始关节速度归零。
+  不会从零位突然跟踪一个远处目标；只重置指定环境，其他环境的姿态和目标不受影响。
+- 每个 episode 内保持该姿态目标，除非外部 IK 控制器主动覆盖；
+  这增加的是**姿态/重心分布**，不是逐步随机动作，也不代表已训练动态挥臂适应能力。
+- **环境初始化时**，各环境独立采样 `arm1_Link`～`arm6_Link` 的质量倍率 0.8～1.2，
+  每个连杆惯量使用与质量相同的倍率；6 个臂关节阻尼倍率 0.5～1.5，
+  Kp/Kd 倍率分别为 0.8～1.2。双腿、躯干和夹爪物理参数不被这些事件修改。
+- 质量改变后重算子树质量、参考逆惯量等派生量；动力学参数在重置时不重采样，
+  避免逐 episode 频繁修改模型。所有倍率相对标称模型计算，不累计漂移。
+
+回放默认关闭这两项机械臂随机化，使用零位姿态和标称机械臂动力学；原有地面摩擦、
+基座质心与编码器偏置设置不变。若要在回放中评估随机手臂，应显式使用训练事件配置，
+或通过上述 IK 接口下发目标，不能仅看零位回放来判断泛化效果。
+配置位于 [环境配置](src/tron2_mjlab/env_cfgs.py) 的 `arm_pose`、`arm_dynamics` 事件。
+臂部自碰撞仍未开启，关节范围内的样本不保证整条机械臂无几何穿插；实机前需加入碰撞约束。
+修改需重启训练进程才会生效，观测/动作维度不变。
+
+## Concurrent Teacher–Student（CTS）
+
+项目只提供 `LBC-CTS` 和 `Baseline-CTS`，不再注册不带 `-CTS` 后缀的纯 PPO 任务，
+也不再提供关闭 CTS 的环境配置选项。CTS 内部仍使用 PPO 更新教师与共享动作网络。
+两种 CTS 使用相同的奖励、动力学、自适应步态和训练预算，机械臂观测区别保持不变。
+这是一种 PPO 与潜变量蒸馏分步更新的 CTS 实现，不宣称逐项复现特定论文的优化器。
+
+- **教师编码器**：使用当前任务的无噪声 Critic 观测，包含足部高度、腾空时间、
+  接触状态及接触力，输出 64 维潜变量。Baseline 教师也不接收机械臂关节状态。
+- **学生编码器**：使用该任务的 5 帧 Actor 历史（含当前帧），由旧到新排列。
+  50 Hz 下相邻帧间隔 20 ms，最旧帧距当前 80 ms。Baseline 历史不含机械臂状态。
+- 两个编码器均使用 `512/256` 隐藏层和 tanh 潜变量，共享 `512/256/128` 动作网络，
+  输入为当前 Actor 观测与所选潜变量，输出仍只有 10 个腿关节动作。
+- 默认 75% 并行环境走教师分支，其余走学生分支。角色随 rollout 一起保存，
+  不因 PPO minibatch 打乱而改变。训练至少需要 2 个环境，小批量会保留至少一个教师和学生。
+- PPO 更新教师、共享动作网络及 Critic，停止学生潜变量的 PPO 梯度；
+  每次 PPO 更新后，在同一批 rollout 上以教师潜变量为监督，仅更新学生编码器。
+  默认蒸馏系数 1.0、学习率 0.001、5 个辅助更新 epoch，记录 `latent_alignment` 损失。
+- CTS 启用观测归一化，历史逐帧复用 Actor 归一化统计，教师使用独立特权观测统计。
+  重置时历史用新 episode 的首帧填满，不读取上一个 episode 的状态。
+- **回放和导出始终只用学生**，不需要 Critic 观测、教师编码器或角色标记。
+  纯 PPO checkpoint 与 CTS checkpoint 不兼容，应从头训练；CTS checkpoint 保存两个编码器、
+  PPO 优化器、学生优化器及归一化统计，支持同任务续训。
+
+实验目录分别为 `tron2a_sfyg_velocity_lbc_cts` 和 `tron2a_sfyg_velocity_baseline_cts`，
+历史纯 PPO 日志不删除或迁移。当前 CTS 支持单进程/单 GPU，不支持多 GPU 或对称数据增强。
+参数定义见 [CTS 实现](src/tron2_mjlab/cts.py)，尚未验证长期收敛。
+
+每次保存检查点会按 mjlab 的速度任务流程导出学生 ONNX；输入名为 `actor_history`，
+形状为 `(1, 5, 56)`（LBC）或 `(1, 5, 44)`（Baseline），输出为 `(1, 10)`。
+历史由调用者维护，顺序及单帧特征必须与训练一致；每个策略步推进一次，重置时用首帧填满。
+归一化和学生编码器包含在导出模型中，不应在外部重复归一化。
+原有 `runner.export_policy_to_jit(...)` 接口也导出相同的学生历史输入。
 
 ## 交替步态与速度范围
 
@@ -127,21 +192,20 @@ uv sync --default-index https://pypi.tuna.tsinghua.edu.cn/simple
 ## 训练
 
 ```bash
-uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-LBC
-uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline
+uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-LBC-CTS
+uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline-CTS
 ```
 
 默认 1024 个并行环境，物理步长 2 ms，策略频率 50 Hz，10000 次 PPO 迭代。
 使用 TensorBoard 本地日志，无需 W&B 登录。日志和模型位于 `logs/rsl_rl/`。
-LBC 实验目录为 `tron2a_sfyg_velocity_lbc`，Baseline 为 `tron2a_sfyg_velocity_baseline`。
-原无后缀任务名已改为 `-LBC`；当前版本还加入了相位观测，不能加载旧 54 维 Actor 模型。
-历史日志目录不自动迁移。
+LBC 实验目录为 `tron2a_sfyg_velocity_lbc_cts`，Baseline 为 `tron2a_sfyg_velocity_baseline_cts`。
+旧无 CTS 后缀的任务已移除，不能加载旧单帧 Actor checkpoint。
 显存不足时使用 `--env.scene.num-envs 256`。
 
 快速检查训练入口：
 
 ```bash
-uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-LBC --env.scene.num-envs 16 --agent.max-iterations 1
+uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-LBC-CTS --env.scene.num-envs 16 --agent.max-iterations 1
 ```
 
 ## 预览
@@ -149,8 +213,8 @@ uv run train Mjlab-Velocity-Flat-TRON2A-SFYG-LBC --env.scene.num-envs 16 --agent
 ### 手动调速面板
 
 ```bash
-uv run tron2-play SFYG --checkpoint-file /path/to/lbc/model.pt
-uv run tron2-play SFYG --baseline --checkpoint-file /path/to/baseline/model.pt
+uv run tron2-play SFYG --checkpoint-file /path/to/lbc_cts/model.pt
+uv run tron2-play SFYG --baseline --checkpoint-file /path/to/baseline_cts/model.pt
 ```
 
 打开终端输出的 Viser 地址，在 `Velocity Command` 面板中调节 `Forward (m/s)`、
@@ -160,15 +224,16 @@ uv run tron2-play SFYG --baseline --checkpoint-file /path/to/baseline/model.pt
 原 `Simulation / Speed` 调整的是仿真播放速度，与机器人目标速度不同。
 
 没有模型时可用 `uv run tron2-play SFYG --agent zero` 检查面板，但零动作策略不会跟踪速度。
-手动回放默认使用 LBC；检查 Baseline 时加 `--baseline`，加载 Baseline checkpoint 也必须加此选项。
+手动回放默认使用 LBC-CTS 学生；检查 Baseline-CTS 时加 `--baseline`，加载其 checkpoint 也必须加此选项。
+`--cts` 参数已移除，CTS 始终启用；调速面板只刷新当前帧的指令和相位，不额外推进历史。
 必须指定 SFYG 模型完整的 `.pt` 文件路径，不能只指定目录。
 
 ### 自动指令回放
 
 ```bash
-uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-LBC --agent zero --viewer viser
-uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-LBC --checkpoint-file /path/to/lbc/model.pt --viewer viser
-uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline --checkpoint-file /path/to/baseline/model.pt --viewer viser
+uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-LBC-CTS --agent zero --viewer viser
+uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-LBC-CTS --checkpoint-file /path/to/lbc_cts/model.pt --viewer viser
+uv run play Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline-CTS --checkpoint-file /path/to/baseline_cts/model.pt --viewer viser
 ```
 
 零动作仅用于检查模型，不代表已经学会平衡。PD 增益、初始姿态和奖励是训练起点，
@@ -181,9 +246,12 @@ uv run python -m unittest discover -s tests -v
 ```
 
 覆盖两组 SFYG 任务注册、模型编译、平地配置、机械臂状态观测与独立目标、baseline 观测隔离、
+机械臂姿态分布与目标同步、质量/惯量一致性、动力学随机化范围及腿部参数隔离、
+仅双脚自碰撞的过滤、初始姿态无自接触、交叉脚姿态的接触力响应、
 手动调速与重置、步态交替/停步/部分重置、自适应周期映射/步频平滑/相位连续性、
 两倍速度范围，以及两组任务各自的 GPU 上
-100 步接触检测和一次 PPO 更新；
+100 步接触检测和一次 CTS 更新；另外覆盖两种 CTS 的教师/学生梯度隔离、历史推进与部分重置、
+PPO/蒸馏更新、检查点与学生优化器恢复、学生 TorchScript/ONNX 数值一致性；
 没有 CUDA 时跳过 GPU 测试。
 
 ## 资源

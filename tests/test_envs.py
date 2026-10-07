@@ -27,7 +27,9 @@ class Tron2Tests(unittest.TestCase):
         self.assertEqual(
             [task for task in list_tasks() if "TRON2" in task],
             [f"Mjlab-Velocity-Flat-TRON2A-{variant}{suffix}"
-             for variant, suffix in product(VARIANTS, ("-Baseline", "-LBC"))],
+             for variant, suffix in product(
+                 VARIANTS, ("-Baseline-CTS", "-LBC-CTS"),
+             )],
         )
         for variant in VARIANTS:
             with self.subTest(variant=variant):
@@ -73,8 +75,8 @@ class Tron2Tests(unittest.TestCase):
                 self.assertEqual(cfg.commands["twist"].gait.slow_period, 0.9)
                 self.assertEqual(cfg.commands["twist"].gait.fast_period, 0.6)
                 self.assertEqual(gait.params["stance_ratio"], 0.6)
-                for group in cfg.observations.values():
-                    phase = group.terms["gait_phase"]
+                for name in ("actor", "critic"):
+                    phase = cfg.observations[name].terms["gait_phase"]
                     self.assertIs(phase.func, gait_phase)
                     self.assertIsNone(phase.noise)
                     for name, value in phase.params.items():
@@ -85,13 +87,16 @@ class Tron2Tests(unittest.TestCase):
                     tron2_flat_env_cfg(variant)
                 with self.assertRaises(ValueError):
                     get_spec(variant)
+        for suffix in ("LBC", "Baseline"):
+            with self.assertRaises(KeyError):
+                load_env_cfg(f"Mjlab-Velocity-Flat-TRON2A-SFYG-{suffix}")
 
     def test_baseline_configs(self):
         task = "Mjlab-Velocity-Flat-TRON2A-SFYG"
         for play in (False, True):
             with self.subTest(play=play):
-                full = load_env_cfg(task + "-LBC", play=play)
-                baseline = load_env_cfg(task + "-Baseline", play=play)
+                full = load_env_cfg(task + "-LBC-CTS", play=play)
+                baseline = load_env_cfg(task + "-Baseline-CTS", play=play)
                 for group in ("actor", "critic"):
                     for term in ("joint_pos", "joint_vel"):
                         self.assertEqual(
@@ -116,16 +121,16 @@ class Tron2Tests(unittest.TestCase):
                     self.assertEqual(ranges.lin_vel_x, (-1.0, 2.0))
                     self.assertEqual(ranges.lin_vel_y, (-0.6, 0.6))
                     self.assertEqual(ranges.ang_vel_z, (-1.0, 1.0))
-        full_rl = load_rl_cfg(task + "-LBC")
-        baseline_rl = load_rl_cfg(task + "-Baseline")
-        self.assertEqual(full_rl.experiment_name, "tron2a_sfyg_velocity_lbc")
-        self.assertEqual(baseline_rl.experiment_name, "tron2a_sfyg_velocity_baseline")
+        full_rl = load_rl_cfg(task + "-LBC-CTS")
+        baseline_rl = load_rl_cfg(task + "-Baseline-CTS")
+        self.assertEqual(full_rl.experiment_name, "tron2a_sfyg_velocity_lbc_cts")
+        self.assertEqual(baseline_rl.experiment_name, "tron2a_sfyg_velocity_baseline_cts")
         baseline_rl.experiment_name = full_rl.experiment_name
         self.assertEqual(asdict(full_rl), asdict(baseline_rl))
 
     def test_play_task_selection(self):
         for baseline in (False, True):
-            task = "Mjlab-Velocity-Flat-TRON2A-SFYG" + ("-Baseline" if baseline else "-LBC")
+            task = "Mjlab-Velocity-Flat-TRON2A-SFYG" + ("-Baseline-CTS" if baseline else "-LBC-CTS")
             argv = ["tron2-play", "SFYG", "--agent", "zero", "--device", "cpu"]
             if baseline:
                 argv.append("--baseline")
@@ -175,7 +180,7 @@ class Tron2Tests(unittest.TestCase):
                     joint_count = 10 if baseline else 16
                     obs = env.observation_manager.compute_group("actor")
                     torch.testing.assert_close(
-                        obs[:, 9:9 + joint_count],
+                        obs[:, -1, 9:9 + joint_count],
                         torch.zeros((1, joint_count), device=env.device),
                     )
                     command = env.command_manager.get_term("twist")
@@ -190,7 +195,7 @@ class Tron2Tests(unittest.TestCase):
                     torch.testing.assert_close(command.command[0], torch.tensor(target, device=env.device))
                     phase_cfg = cfg.observations["actor"].terms["gait_phase"]
                     torch.testing.assert_close(
-                        env.observation_manager.compute_group("actor")[:, -5:-3],
+                        env.observation_manager.compute_group("actor")[:, -1, -5:-3],
                         gait_phase(env, **phase_cfg.params),
                     )
                     env.reset()
@@ -217,7 +222,7 @@ class Tron2Tests(unittest.TestCase):
                         for slider, value in zip(viewer.sliders, target):
                             slider.value = value
                         viewer.sync_viewer_to_env()
-                        torch.testing.assert_close(wrapped.get_observations()["actor"][0, -3:],
+                        torch.testing.assert_close(wrapped.get_observations()["actor"][0, -1, -3:],
                                                    torch.tensor(target, device=env.device))
                         self.assertFalse(viewer.sliders[1].disabled)
                         viewer.manual.value = False
@@ -227,7 +232,7 @@ class Tron2Tests(unittest.TestCase):
                         viewer.sync_viewer_to_env()
                         self.assertFalse(command.command.any())
                         torch.testing.assert_close(
-                            wrapped.get_observations()["actor"][:, -5:-3],
+                            wrapped.get_observations()["actor"][:, -1, -5:-3],
                             torch.zeros((1, 2), device=env.device),
                         )
                     finally:
@@ -261,8 +266,12 @@ class Tron2Tests(unittest.TestCase):
             robot.write_joint_state_to_sim(position, velocity, joint_ids=arm_ids)
             env.sim.forward()
             for group, width in (("actor", 56), ("critic", 68)):
-                obs = env.observation_manager.compute_group(group)
-                self.assertEqual(obs.shape, (2, width))
+                obs = env.observation_manager.compute_group(group, update_history=True)
+                if group == "actor":
+                    self.assertEqual(obs.shape, (2, 5, width))
+                    obs = obs[:, -1]
+                else:
+                    self.assertEqual(obs.shape, (2, width))
                 torch.testing.assert_close(obs[:, 19:25], position)
                 torch.testing.assert_close(obs[:, 35:41], velocity)
             robot.set_joint_position_target(position, joint_ids=arm_ids)
@@ -274,9 +283,9 @@ class Tron2Tests(unittest.TestCase):
             torch.testing.assert_close(env.sim.data.ctrl[:, arm_actuators.ctrl_ids], position)
             obs, _, _, _, _ = env.step(torch.zeros((2, 10), device=env.device))
             torch.testing.assert_close(robot.data.joint_pos_target[:, arm_ids], position)
-            torch.testing.assert_close(obs["actor"][:, 19:25], robot.data.joint_pos[:, arm_ids])
-            torch.testing.assert_close(obs["actor"][:, 35:41], robot.data.joint_vel[:, arm_ids])
-            self.assertGreater((obs["actor"][:, 19:25] - position).abs().max().item(), 1e-5)
+            torch.testing.assert_close(obs["actor"][:, -1, 19:25], robot.data.joint_pos[:, arm_ids])
+            torch.testing.assert_close(obs["actor"][:, -1, 35:41], robot.data.joint_vel[:, arm_ids])
+            self.assertGreater((obs["actor"][:, -1, 19:25] - position).abs().max().item(), 1e-5)
             env.reset()
             torch.testing.assert_close(
                 robot.data.joint_pos_target[:, arm_ids],
@@ -290,7 +299,7 @@ class Tron2Tests(unittest.TestCase):
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for GPU smoke test")
     def test_baseline_excludes_arm_state(self):
-        cfg = load_env_cfg("Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline", play=True)
+        cfg = load_env_cfg("Mjlab-Velocity-Flat-TRON2A-SFYG-Baseline-CTS", play=True)
         env = ManagerBasedRlEnv(cfg, device="cuda:0")
         try:
             env.reset()
@@ -305,8 +314,8 @@ class Tron2Tests(unittest.TestCase):
             robot.write_joint_state_to_sim(position, velocity, joint_ids=arm_ids)
             env.sim.forward()
             for group, width in (("actor", 44), ("critic", 56)):
-                obs = env.observation_manager.compute_group(group)
-                self.assertEqual(obs.shape, (1, width))
+                obs = env.observation_manager.compute_group(group, update_history=True)
+                self.assertEqual(obs.shape, (1, 5, width) if group == "actor" else (1, width))
                 torch.testing.assert_close(obs, observations[group])
             self.assertEqual(env.action_manager.total_action_dim, 10)
             robot.set_joint_position_target(position, joint_ids=arm_ids)
@@ -316,10 +325,10 @@ class Tron2Tests(unittest.TestCase):
             env.close()
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for GPU smoke test")
-    def test_step_and_ppo(self):
+    def test_step_and_cts(self):
         for variant, baseline in product(VARIANTS, (False, True)):
             with self.subTest(variant=variant, baseline=baseline), tempfile.TemporaryDirectory() as log_dir:
-                task = f"Mjlab-Velocity-Flat-TRON2A-{variant}" + ("-Baseline" if baseline else "-LBC")
+                task = f"Mjlab-Velocity-Flat-TRON2A-{variant}" + ("-Baseline-CTS" if baseline else "-LBC-CTS")
                 cfg = load_env_cfg(task)
                 cfg.scene.num_envs = 4
                 cfg.seed = 42
@@ -336,7 +345,7 @@ class Tron2Tests(unittest.TestCase):
                     touched_ground = False
                     for step in range(100):
                         obs, reward, _, _, _ = env.step(actions)
-                        self.assertEqual(obs["actor"].shape, (4, 44 if baseline else 56))
+                        self.assertEqual(obs["actor"].shape, (4, 5, 44 if baseline else 56))
                         self.assertEqual(obs["critic"].shape, (4, 56 if baseline else 68))
                         self.assertTrue(torch.isfinite(reward).all())
                         self.assertTrue(all(torch.isfinite(value).all() for value in obs.values()))
@@ -346,6 +355,7 @@ class Tron2Tests(unittest.TestCase):
                     runner_cfg.num_steps_per_env = 8
                     runner_cfg.algorithm.num_learning_epochs = 1
                     runner_cfg.algorithm.num_mini_batches = 1
+                    runner_cfg.algorithm.alignment_epochs = 1
                     wrapped = RslRlVecEnvWrapper(env, clip_actions=runner_cfg.clip_actions)
                     runner = load_runner_cls(task)(wrapped, asdict(runner_cfg), log_dir, env.device)
                     runner.learn(num_learning_iterations=1, init_at_random_ep_len=False)

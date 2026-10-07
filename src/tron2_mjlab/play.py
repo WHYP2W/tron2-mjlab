@@ -12,7 +12,7 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.viewer import ViserPlayViewer
 
 from .robot import VARIANTS
-from .gait import GaitVelocityCommand, GaitVelocityCommandCfg
+from .gait import GaitVelocityCommand, GaitVelocityCommandCfg, gait_phase
 
 
 class ManualVelocityCommand(GaitVelocityCommand):
@@ -79,20 +79,27 @@ class VelocityViewer(ViserPlayViewer):
             self.command._resample_command(torch.arange(self.env.num_envs, device=self.env.device))
         self.command._update_command()
         self.env.unwrapped.observation_manager._obs_buffer = None
+        observations = self.env.unwrapped.observation_manager.compute()
+        actor = observations["actor"]
+        if not isinstance(actor, torch.Tensor) or actor.ndim != 3:
+            raise ValueError("CTS playback requires actor observations shaped (batch, history, features)")
+        # Refresh the live command without appending extra simulation history frames.
+        actor[:, -1, -3:] = self.command.command
+        actor[:, -1, -5:-3] = gait_phase(self.env.unwrapped, command_name="twist")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TRON2A Viser manual velocity playback (default: LBC)")
+    parser = argparse.ArgumentParser(description="TRON2A CTS student playback (default: LBC-CTS)")
     parser.add_argument("variant", choices=VARIANTS)
     parser.add_argument("--baseline", action="store_true",
-                        help="Use Baseline instead of LBC, without arm-state observations")
+                        help="Use Baseline-CTS instead of LBC-CTS, without arm-state observations")
     parser.add_argument("--checkpoint-file", type=Path)
     parser.add_argument("--agent", choices=("trained", "zero"), default="trained")
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
     if args.agent == "trained" and (args.checkpoint_file is None or not args.checkpoint_file.is_file()):
         parser.error("--checkpoint-file must point to a .pt file; use --agent zero for model inspection")
-    task = f"Mjlab-Velocity-Flat-TRON2A-{args.variant}" + ("-Baseline" if args.baseline else "-LBC")
+    task = f"Mjlab-Velocity-Flat-TRON2A-{args.variant}" + ("-Baseline-CTS" if args.baseline else "-LBC-CTS")
     cfg = load_env_cfg(task, play=True)
     cfg.commands["twist"] = ManualVelocityCommandCfg(**vars(cfg.commands["twist"]))
     runner_cfg = load_rl_cfg(task)
