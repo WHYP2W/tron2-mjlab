@@ -238,6 +238,9 @@ uv run tron2-play SFYG --baseline --checkpoint-file /path/to/baseline_cts/model.
 
 没有模型时可用 `uv run tron2-play SFYG --agent zero` 检查面板，但零动作策略不会跟踪速度。
 手动回放默认使用 LBC-CTS 学生；检查 Baseline-CTS 时加 `--baseline`，加载其 checkpoint 也必须加此选项。
+LBC checkpoint 的单帧观测为 56 维，Baseline 为 44 维，两者不能混用。若报 checkpoint 56 维而当前模型
+44 维，应去掉 `--baseline`；反过来则加上该选项。回放在启动仿真前检查任务与历史输入维度，
+不使用截断、补零或忽略权重的方式加载不匹配模型。选错任务不需要重新训练，改正回放选项即可。
 `--cts` 参数已移除，CTS 始终启用；调速面板只刷新当前帧的指令和相位，不额外推进历史。
 必须指定 SFYG 模型完整的 `.pt` 文件路径，不能只指定目录。
 

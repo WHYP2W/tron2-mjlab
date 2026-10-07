@@ -1,6 +1,7 @@
 """Concurrent teacher/student PPO with student-only history inference."""
 
 from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 from typing import TYPE_CHECKING
@@ -17,6 +18,42 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 HISTORY_LENGTH = 5
+
+
+def validate_actor_checkpoint(
+    state: Mapping[str, torch.Tensor], obs_dim: int, history_length: int,
+) -> None:
+    """Reject incompatible CTS observation interfaces without dropping weights."""
+    history_weight = state.get("student_encoder.0.0.weight")
+    if not isinstance(history_weight, torch.Tensor) or history_weight.ndim != 2:
+        raise ValueError("Checkpoint is not a CTS actor; select a matching CTS training checkpoint")
+    mean = state.get("obs_normalizer._mean")
+    if mean is not None:
+        if not isinstance(mean, torch.Tensor) or mean.ndim != 2 or mean.shape[0] != 1:
+            raise ValueError("Checkpoint has an invalid actor observation normalizer")
+        checkpoint_dim = mean.shape[1]
+    else:
+        if history_weight.shape[1] % history_length:
+            raise ValueError("Checkpoint history input does not match the configured history length")
+        checkpoint_dim = history_weight.shape[1] // history_length
+    if checkpoint_dim != obs_dim:
+        variants = {44: "Baseline-CTS", 56: "LBC-CTS"}
+        actual = variants.get(checkpoint_dim, f"{checkpoint_dim}-feature actor")
+        expected = variants.get(obs_dim, f"{obs_dim}-feature actor")
+        hint = ""
+        if checkpoint_dim == 56 and obs_dim == 44:
+            hint = " For tron2-play, remove --baseline to use LBC-CTS."
+        elif checkpoint_dim == 44 and obs_dim == 56:
+            hint = " For tron2-play, add --baseline to use Baseline-CTS."
+        raise ValueError(
+            f"Checkpoint is {actual} ({checkpoint_dim} features), but the selected task is "
+            f"{expected} ({obs_dim} features).{hint} Do not mix checkpoints between tasks."
+        )
+    if history_weight.shape[1] != obs_dim * history_length:
+        raise ValueError(
+            f"Checkpoint history input has {history_weight.shape[1]} features; "
+            f"expected {history_length} frames x {obs_dim} features. Use a matching checkpoint."
+        )
 
 
 def teacher_role(
@@ -193,6 +230,11 @@ class CtsPPO(PPO):
         return saved
 
     def load(self, loaded_dict, load_cfg=None, strict=True):
+        if load_cfg is None or load_cfg.get("actor", False):
+            state = loaded_dict.get("actor_state_dict")
+            if not isinstance(state, Mapping):
+                raise ValueError("Checkpoint does not contain an actor_state_dict")
+            validate_actor_checkpoint(state, self.actor.obs_dim, self.actor.history_length)
         result = super().load(loaded_dict, load_cfg, strict)
         if load_cfg is None or load_cfg.get("optimizer", False):
             self.student_optimizer.load_state_dict(loaded_dict["cts_student_optimizer"])

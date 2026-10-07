@@ -1,6 +1,8 @@
 """Manual velocity commands and Viser playback for TRON2A."""
 
 import argparse
+import pickle
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from mjlab.viewer import ViserPlayViewer
 
 from .robot import VARIANTS
 from .gait import GaitVelocityCommand, GaitVelocityCommandCfg, gait_phase
+from .cts import validate_actor_checkpoint
 
 
 class ManualVelocityCommand(GaitVelocityCommand):
@@ -103,6 +106,21 @@ def main():
     cfg = load_env_cfg(task, play=True)
     cfg.commands["twist"] = ManualVelocityCommandCfg(**vars(cfg.commands["twist"]))
     runner_cfg = load_rl_cfg(task)
+    if args.agent == "trained":
+        history_length = cfg.observations["actor"].history_length
+        if history_length is None:
+            parser.error("CTS playback requires a configured actor history length")
+        try:
+            checkpoint = torch.load(args.checkpoint_file, map_location="cpu", weights_only=True)
+            if not isinstance(checkpoint, Mapping) or not isinstance(checkpoint.get("actor_state_dict"), Mapping):
+                raise ValueError("Select a CTS training checkpoint containing actor_state_dict")
+            validate_actor_checkpoint(
+                checkpoint["actor_state_dict"], 44 if args.baseline else 56,
+                history_length,
+            )
+        except (OSError, RuntimeError, ValueError, EOFError, pickle.UnpicklingError) as exc:
+            parser.error(f"Cannot load checkpoint {args.checkpoint_file}: {exc}")
+        del checkpoint
     env = ManagerBasedRlEnv(cfg, device=args.device)
     try:
         wrapped = RslRlVecEnvWrapper(env, clip_actions=runner_cfg.clip_actions)
