@@ -1,1 +1,0 @@
-"""World-frame whole-body end-effector servo experiments."""

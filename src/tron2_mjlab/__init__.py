@@ -1,4 +1,4 @@
-"""TRON2A YG flat-terrain tasks, discovered by mjlab's plugin loader."""
+"""TRON2A SFYG flat-terrain task, discovered by mjlab's plugin loader."""
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 from mjlab.tasks.registry import register_mjlab_task

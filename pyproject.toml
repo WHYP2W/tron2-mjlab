@@ -1,7 +1,7 @@
 [project]
 name = "tron2-mjlab"
 version = "0.1.0"
-description = "Flat-terrain velocity training for TRON2A SFYG and WFYG"
+description = "Flat-terrain velocity training for TRON2A SFYG"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
@@ -10,12 +10,10 @@ dependencies = [
 	"mujoco-warp==3.5.0",
 	"warp-lang==1.12.0",
 	"scipy>=1.10",
-	"matplotlib>=3.7",
 ]
 
 [project.scripts]
 tron2-play = "tron2_mjlab.play:main"
-velowb = "tron2_mjlab.velowb.experiment:main"
 
 [project.entry-points."mjlab.tasks"]
 tron2_mjlab = "tron2_mjlab"

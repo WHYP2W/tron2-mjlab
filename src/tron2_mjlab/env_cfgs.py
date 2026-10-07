@@ -1,7 +1,7 @@
-"""Flat velocity tracking, shared by TRON2A SFYG and WFYG."""
+"""Flat velocity tracking for TRON2A SFYG."""
 
 from mjlab.envs import ManagerBasedRlEnvCfg
-from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
+from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
@@ -15,10 +15,8 @@ def tron2_flat_env_cfg(variant: str, play: bool = False) -> ManagerBasedRlEnvCfg
     if variant not in VARIANTS:
         raise ValueError(f"Unknown TRON2A variant: {variant}")
     cfg = make_velocity_env_cfg()
-    wheeled = variant == "WFYG"
-    foot_body = "wheel" if wheeled else "ankle_pitch"
-    foot_bodies = tuple(f"{foot_body}_{side}_Link" for side in ("L", "R"))
-    foot_geoms = (rf"{foot_body}_[LR]_Link_collision_.*",)
+    foot_bodies = tuple(f"ankle_pitch_{side}_Link" for side in ("L", "R"))
+    foot_geoms = (r"ankle_pitch_[LR]_Link_collision_.*",)
     sites = ("foot_L", "foot_R")
     cfg.scene.entities = {"robot": get_robot_cfg(variant)}
     cfg.scene.num_envs = 1 if play else 1024
@@ -48,11 +46,6 @@ def tron2_flat_env_cfg(variant: str, play: bool = False) -> ManagerBasedRlEnvCfg
         entity_name="robot", actuator_names=LEG_JOINTS, scale=0.25,
         use_default_offset=True,
     )}
-    if wheeled:
-        cfg.actions["wheel_vel"] = JointVelocityActionCfg(
-            entity_name="robot", actuator_names=("wheel_.*",), scale=10.0,
-            use_default_offset=False,
-        )
     for group in cfg.observations.values():
         group.terms.pop("height_scan", None)
         group.terms["joint_pos"].params["asset_cfg"] = SceneEntityCfg(
@@ -70,16 +63,12 @@ def tron2_flat_env_cfg(variant: str, play: bool = False) -> ManagerBasedRlEnvCfg
         cfg.rewards[name].params["asset_cfg"].body_names = ("base_Link",)
     for name in ("foot_clearance", "foot_swing_height", "foot_slip"):
         cfg.rewards[name].params["asset_cfg"].site_names = sites
-    if wheeled:
-        for name in ("air_time", "foot_clearance", "foot_swing_height",
-                     "foot_slip", "soft_landing"):
-            cfg.rewards.pop(name)
     cfg.terminations["illegal_contact"] = TerminationTermCfg(
         func=mdp.illegal_contact, params={"sensor_name": "nonfoot_ground_touch"},
     )
     command = cfg.commands["twist"]
     command.ranges.lin_vel_x = (-0.5, 1.0)
-    command.ranges.lin_vel_y = (0.0, 0.0) if wheeled else (-0.3, 0.3)
+    command.ranges.lin_vel_y = (-0.3, 0.3)
     command.viz.z_offset = 0.5
     cfg.viewer.body_name = "base_Link"
     cfg.viewer.distance = 2.5

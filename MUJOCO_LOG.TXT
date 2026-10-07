@@ -1,5 +1,0 @@
-WARNING Sun Oct  4 23:57:30 2026: Attach conflict when attaching 'bipedal_robot' to 'mjlab scene', policy is 'warning'
-timestep: parent has 0.002 (default), child has 0.001, keeping parent value
-njmax: parent has -1 (default), child has 5000, keeping parent value
-nconmax: parent has -1 (default), child has 1000, keeping parent value
-

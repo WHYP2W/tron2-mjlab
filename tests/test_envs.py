@@ -2,7 +2,6 @@
 
 import tempfile
 import unittest
-import re
 from dataclasses import asdict
 
 import mujoco
@@ -14,34 +13,13 @@ from mjlab.tasks.registry import list_tasks, load_rl_cfg, load_runner_cls
 
 from tron2_mjlab.env_cfgs import tron2_flat_env_cfg
 from tron2_mjlab.play import ManualVelocityCommandCfg, VelocityViewer
-from tron2_mjlab.robot import VARIANTS, get_robot_cfg
+from tron2_mjlab.robot import ASSET_ROOT, VARIANTS, get_robot_cfg, get_spec
 
 
 class Tron2Tests(unittest.TestCase):
-    def test_arm_articulation(self):
-        for variant in VARIANTS:
-            for locked, arm_dofs in ((True, 5), (False, 6)):
-                with self.subTest(variant=variant, locked=locked):
-                    cfg = get_robot_cfg(
-                        variant, active_arm=True, lock_arm_yaw=locked,
-                    )
-                    model = Entity(cfg).spec.compile()
-                    self.assertEqual((model.nq, model.nv, model.nu),
-                                     (17 + arm_dofs, 16 + arm_dofs, 10 + arm_dofs))
-                    self.assertGreaterEqual(model.site("ee").id, 0)
-                    self.assertEqual(
-                        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT,
-                                         "arm1_Joint") == -1, locked,
-                    )
-                    for joint_id in range(model.njnt):
-                        name = model.joint(joint_id).name or ""
-                        if name.startswith("arm"):
-                            values = [value for pattern, value in cfg.init_state.joint_pos.items()
-                                      if re.fullmatch(pattern, name)]
-                            self.assertEqual(values, [0.0])
-                    self.assertEqual(cfg.init_state.joint_vel, {".*": 0.0})
-
     def test_models_and_configs(self):
+        self.assertEqual(VARIANTS, ("SFYG",))
+        self.assertFalse((ASSET_ROOT / "WFYG_TRON2A").exists())
         self.assertEqual(
             [task for task in list_tasks() if "TRON2" in task],
             [f"Mjlab-Velocity-Flat-TRON2A-{variant}" for variant in VARIANTS],
@@ -50,6 +28,10 @@ class Tron2Tests(unittest.TestCase):
             with self.subTest(variant=variant):
                 model = Entity(get_robot_cfg(variant)).spec.compile()
                 self.assertEqual((model.nq, model.nv, model.nu), (17, 16, 10))
+                for joint_id in range(model.njnt):
+                    self.assertFalse(
+                        (model.joint(joint_id).name or "").startswith(("arm", "gripper"))
+                    )
                 self.assertFalse((model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE).any())
                 cfg = tron2_flat_env_cfg(variant)
                 self.assertEqual(cfg.scene.terrain.terrain_type, "plane")
@@ -60,11 +42,15 @@ class Tron2Tests(unittest.TestCase):
                 play = tron2_flat_env_cfg(variant, play=True)
                 self.assertFalse(play.observations["actor"].enable_corruption)
                 self.assertTrue(cfg.observations["actor"].enable_corruption)
-                if variant == "WFYG":
-                    self.assertIn("wheel_vel", cfg.actions)
-                    self.assertNotIn("foot_slip", cfg.rewards)
-        with self.assertRaises(ValueError):
-            tron2_flat_env_cfg("SFYG_TRON2B")
+                self.assertEqual(set(cfg.actions), {"joint_pos"})
+                self.assertIn("foot_slip", cfg.rewards)
+                self.assertEqual(cfg.commands["twist"].ranges.lin_vel_y, (-0.3, 0.3))
+        for variant in ("WFYG", "SFYG_TRON2B"):
+            with self.subTest(unsupported_variant=variant):
+                with self.assertRaises(ValueError):
+                    tron2_flat_env_cfg(variant)
+                with self.assertRaises(ValueError):
+                    get_spec(variant)
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for GPU smoke test")
     def test_manual_command(self):
@@ -76,7 +62,7 @@ class Tron2Tests(unittest.TestCase):
                 try:
                     env.reset()
                     command = env.command_manager.get_term("twist")
-                    target = (0.5, 0.2 if variant == "SFYG" else 0.0, -0.3)
+                    target = (0.5, 0.2, -0.3)
                     command.manual_target = target
                     command.time_left[:] = 0.0
                     env.step(torch.zeros((1, 10), device=env.device))
@@ -99,7 +85,7 @@ class Tron2Tests(unittest.TestCase):
                         viewer.sync_viewer_to_env()
                         torch.testing.assert_close(wrapped.get_observations()["actor"][0, -3:],
                                                    torch.tensor(target, device=env.device))
-                        self.assertEqual(viewer.sliders[1].disabled, variant == "WFYG")
+                        self.assertFalse(viewer.sliders[1].disabled)
                         viewer.manual.value = False
                         viewer.sync_viewer_to_env()
                         self.assertIsNone(command.manual_target)
