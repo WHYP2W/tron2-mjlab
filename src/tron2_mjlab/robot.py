@@ -97,15 +97,15 @@ def get_robot_cfg(variant: str) -> EntityCfg:
         ),
         collisions=(CollisionCfg(
             geom_names_expr=(".*_collision_.*",),
-            # Bit 1 is terrain; bits 2/4 allow only opposite-foot self contacts.
+            # Terrain=1, left/right feet=2/4, other robot parts=8.
             contype={
                 "ankle_pitch_L_Link_collision_.*": 2,
                 "ankle_pitch_R_Link_collision_.*": 4,
-                "(?!ankle_pitch_[LR]_Link_collision_).*": 0,
+                "(?!ankle_pitch_[LR]_Link_collision_).*": 8,
             },
             conaffinity={
-                "ankle_pitch_L_Link_collision_.*": 1 | 4,
-                "ankle_pitch_R_Link_collision_.*": 1 | 2,
+                "ankle_pitch_L_Link_collision_.*": 1 | 4 | 8,
+                "ankle_pitch_R_Link_collision_.*": 1 | 2 | 8,
                 "(?!ankle_pitch_[LR]_Link_collision_).*": 1,
             },
             condim=3, friction=(0.8, 0.005, 0.0001),
