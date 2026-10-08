@@ -5,6 +5,7 @@ from math import expm1, isfinite, tau
 from typing import TYPE_CHECKING
 
 import torch
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.tasks.velocity.mdp import UniformVelocityCommand, UniformVelocityCommandCfg
 
@@ -132,3 +133,18 @@ def alternating_contacts(
     foot_phase = torch.stack((phase, torch.remainder(phase + 0.5, 1.0)), dim=-1)
     stance = (foot_phase < stance_ratio) | ~moving[:, None]
     return ((found > 0) == stance).float().mean(dim=1)
+
+
+def feet_too_close(
+    env: "ManagerBasedRlEnv", asset_cfg: SceneEntityCfg, min_distance: float,
+) -> torch.Tensor:
+    """Squared normalized shortfall of horizontal foot-site separation."""
+    if not isfinite(min_distance) or min_distance <= 0:
+        raise ValueError("Minimum foot distance must be finite and positive")
+    feet = env.scene[asset_cfg.name].data.site_pos_w[:, asset_cfg.site_ids]
+    if feet.shape != (env.num_envs, 2, 3):
+        raise ValueError("Foot separation reward requires exactly two 3D foot sites")
+    distance = torch.linalg.vector_norm(feet[:, 0, :2] - feet[:, 1, :2], dim=1)
+    env.extras["log"]["Metrics/feet_distance_xy"] = distance.mean()
+    env.extras["log"]["Metrics/feet_too_close_fraction"] = (distance < min_distance).float().mean()
+    return ((min_distance - distance).clamp_min(0) / min_distance).square()

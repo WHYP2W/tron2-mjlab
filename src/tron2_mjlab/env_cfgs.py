@@ -30,7 +30,7 @@ from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 from .robot import ARM_JOINTS, LEG_JOINTS, VARIANTS, get_robot_cfg
-from .gait import GaitVelocityCommandCfg, alternating_contacts, gait_phase
+from .gait import GaitVelocityCommandCfg, alternating_contacts, feet_too_close, gait_phase
 from .cts import HISTORY_LENGTH, teacher_role
 from .domain_randomization import randomize_arm_dynamics, randomize_arm_pose
 from .arm_motion import RandomArmMotionCfg
@@ -126,6 +126,13 @@ def tron2_flat_env_cfg(
     cfg.rewards["gait_contact"] = RewardTermCfg(
         func=alternating_contacts, weight=1.0,
         params={**gait_params, "sensor_name": "feet_ground_contact", "stance_ratio": 0.6},
+    )
+    cfg.rewards["feet_too_close"] = RewardTermCfg(
+        func=feet_too_close, weight=-1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", site_names=sites, preserve_order=True),
+            "min_distance": 0.18,
+        },
     )
     cfg.terminations["illegal_contact"] = TerminationTermCfg(
         func=mdp.illegal_contact, params={"sensor_name": "nonfoot_ground_touch"},
